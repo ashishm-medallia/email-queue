@@ -13,7 +13,7 @@ sequenceDiagram
     participant Mail as Mail Provider
 
     %% --- EMAIL CREATION ---
-    APP->>DB: INSERT INTO EmailQueue (Pending, ScheduledAt, S3Key, ClientId,...)
+    APP->>DB: INSERT email data INTO plateform.EmailQueue
 
     %% --- WORKER LOOP ---
     loop Every short interval
@@ -23,7 +23,7 @@ sequenceDiagram
 
     %% --- PROCESS EACH EMAIL ---
     opt For each email row
-        ES->>RT: RequestThrottleCheck - RequestPermitAsync(clientId, priority)
+        ES->>RT: RequestThrottleCheck - RequestPermitAsync(clientId)
 
         %% --- LOAD CONFIG ---
         RT->>DB: Load ThrottleConfig (global + clientId)
@@ -98,7 +98,7 @@ sequenceDiagram
     end
 
     opt For each email row
-        EmailSender->>Redis: RequestPermit(clientId, priority)
+        EmailSender->>Redis: RequestPermit(clientId)
         Redis-->>EmailSender: Allowed / Throttled
 
         alt Throttled
@@ -132,7 +132,7 @@ sequenceDiagram
     ConfigStore-->>EmailSender: {LimitPerMin, Weight}
 
     EmailSender->>ConfigStore: Load client config (email/clientId)
-    ConfigStore-->>EmailSender: {LimitPerMin?, Weight?}
+    ConfigStore-->>EmailSender: {LimitPerMin, Weight}
 
     EmailSender->>Redis: Run Lua Script<br/>INCR global + client counters
     Redis-->>EmailSender: 1 (allowed) or 0 (blocked)
