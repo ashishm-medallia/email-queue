@@ -1,6 +1,7 @@
 # Email Delivery Architecture
 
 ## 1. Use Case Diagram — Email Sending + Throttling + Retry Flow
+
 ```mermaid
 flowchart LR
     User(User/System Creates Email) --> EQ[(Email Queue Table)]
@@ -18,7 +19,10 @@ flowchart LR
     EmailSender -->|UpdateStatus| DB
 ```
 
+
+
 ## 2.Sequence Diagram — Full Email Sending Process With Throttling + Retry
+
 ```mermaid
 sequenceDiagram
     participant DB as SQL Database
@@ -55,24 +59,47 @@ sequenceDiagram
     end
 ```
 
+
+
 ## 3. Sequence Diagram — Throttling Logic Only
+
 ```mermaid
 sequenceDiagram
-    participant EmailSender
-    participant ConfigStore as ThrottleConfigStore (DB)
-    participant Redis
+    autonumber
 
-    EmailSender->>ConfigStore: Load global config (email/global)
-    ConfigStore-->>EmailSender: {LimitPerMin, Weight}
+    participant ES as EmailSender
+    participant RT as RedisThrottler
+    participant TCS as ThrottleConfigStore (DB)
+    participant R as Redis
 
-    EmailSender->>ConfigStore: Load client config (email/clientId)
-    ConfigStore-->>EmailSender: {LimitPerMin?, Weight?}
+    ES->>RT: RequestThrottleCheck - RequestPermitAsync(clientId, priority)
+    
+    RT->>TCS: Load throttle config (global + client)
+    TCS-->>RT: Return ThrottleConfig list
 
-    EmailSender->>Redis: Run Lua Script<br/>INCR global + client counters
-    Redis-->>EmailSender: 1 (allowed) or 0 (blocked)
+    RT->>R: Get counters for all keys (global + client)
+    R-->>RT: Current counters (or nil)
+
+    Note over RT: Compute finalWeight<br/>priority weight applied here
+
+    RT->>RT: Check counters vs limit<br/>If ANY exceeded → throttle
+
+    RT->>R: Lua Script<br/>INCR key by finalWeight<br/>TTL=60s
+    R-->>RT: 0 (throttled) OR 1 (allowed)
+
+    alt throttle exceeded
+        RT-->>ES: ThrottleDecision = REJECT<br/>retry_after = 60 sec
+    else allowed
+        RT->>R: Lua Script<br/>Increment counters atomically<br/>Set TTL = 60 sec
+        R-->>RT: OK
+        RT-->>ES: ThrottleDecision = ALLOW
+    end
 ```
 
+
+
 ## 4. Sequence Diagram — Retry / Backoff Logic
+
 ```mermaid
 sequenceDiagram
     participant Sender as Email Sender
@@ -87,7 +114,7 @@ sequenceDiagram
         Sender->>Sender: computeBackoff(attempt)
         Sender->>DB: UpdateEmailStatus(Pending, scheduledAt = backoffTime)
     else Permanent Failure
-        Sender->>DB: UpdateEmailStatus(DeadLetter)
+        Sender->>DB: UpdateEmailStatus(Failed)
     else Success
         Sender->>DB: UpdateEmailStatus(Sent)
     end
